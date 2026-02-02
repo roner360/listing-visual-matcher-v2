@@ -124,35 +124,36 @@ page_df = df.iloc[start:end]
 
 st.divider()
 
+# ---------- CSS: hide the checkbox visually (but keep it for state) ----------
+st.markdown(
+    """
+    <style>
+    /* Hide checkbox control but keep it in DOM to preserve state */
+    div[data-testid="stCheckbox"] {
+        display: none;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 # ---------- render ----------
 for i, row in page_df.iterrows():
     with st.container(border=True):
-
-        # BIG MATCH button (checkbox styled via label + scale)
-        st.markdown(
-            """
-            <style>
-            div[data-testid="stCheckbox"] label {
-                font-size: 1.4rem;
-                font-weight: 700;
-            }
-            div[data-testid="stCheckbox"] input {
-                transform: scale(1.6);
-                margin-right: 8px;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-
         left, mid, right = st.columns([1.2, 3, 3])
 
-        # --- LEFT: BIG MATCH + link ---
+        # --- LEFT: Big MATCH button + Amazon link ---
         with left:
             current = get_match(i)
-            new_val = st.checkbox("MATCH", value=current, key=f"match_{i}")
-            if new_val != current:
-                set_match(i, new_val)
+
+            # Hidden checkbox to store state (key remains stable)
+            _ = st.checkbox("MATCH", value=current, key=f"match_{i}")
+
+            # Big toggle button (same style/size as link_button)
+            btn_label = "✅ MATCH" if not current else "❌ UNMATCH"
+            if st.button(btn_label, key=f"btn_match_{i}", use_container_width=True):
+                set_match(i, not current)
+                st.rerun()
 
             amazon_url = ""
             if amazon_mode == "From CSV column":
@@ -162,7 +163,7 @@ for i, row in page_df.iterrows():
                 amazon_url = build_amazon_url_from_asin_marketplace(asin_val, marketplace_suffix)
 
             if is_nonempty(amazon_url):
-                st.link_button("Open Amazon", amazon_url)
+                st.link_button("Open Amazon", amazon_url, use_container_width=True)
 
         # --- MID: Amazon image ---
         with mid:
