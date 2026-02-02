@@ -16,12 +16,11 @@ def safe_str(x) -> str:
     s = str(x).strip()
     return "" if s.lower() == "nan" else s
 
-def build_amazon_url_from_asin_marketplace(asin: str, marketplace: str) -> str:
+def build_amazon_url_from_asin_marketplace(asin: str, marketplace_suffix: str) -> str:
     asin = safe_str(asin)
-    mp = safe_str(marketplace).lower()
+    mp = safe_str(marketplace_suffix).lower()
     if not asin or not mp:
         return ""
-    # supporta sia "it" che "IT"
     return f"https://www.amazon.{mp}/dp/{asin}"
 
 def is_nonempty(s: str) -> bool:
@@ -51,20 +50,23 @@ with st.sidebar:
 
     amazon_mode = st.radio(
         "How to get Amazon URL?",
-        ["From CSV column", "Build from ASIN + MARKETPLACE"],
+        ["From CSV column", "Build from ASIN"],
         index=0
     )
 
     amazon_url_col = None
     asin_col = None
-    marketplace_col = None
+    marketplace_suffix = ""
 
     if amazon_mode == "From CSV column":
         amazon_url_col = st.selectbox("Amazon URL column", cols)
     else:
         asin_col = st.selectbox("ASIN column", cols)
-        marketplace_col = st.selectbox("MARKETPLACE column (it/us/de/...)", cols)
-        st.caption("URL will be: https://www.amazon.<marketplace>/dp/<asin>")
+        marketplace_suffix = st.text_input(
+            "Marketplace suffix (manual)",
+            placeholder="it, com, co.uk, de, fr, es …"
+        )
+        st.caption("URL format: https://www.amazon.<suffix>/dp/<ASIN>")
 
     st.divider()
     st.header("Images")
@@ -72,7 +74,6 @@ with st.sidebar:
     amazon_img_col = st.selectbox("Amazon IMAGE URL column", ["(none)"] + cols)
     gross_img_col = st.selectbox("Wholesale IMAGE URL column", cols)
 
-    # Zoom / size controls (simple + effective)
     img_width = st.slider("Image width (px)", 180, 650, 360, 10)
     img_max_height = st.slider("Max image height (px)", 160, 900, 380, 10)
 
@@ -83,7 +84,6 @@ with st.sidebar:
         [c for c in cols if c not in {
             *( [amazon_url_col] if amazon_url_col else [] ),
             *( [asin_col] if asin_col else [] ),
-            *( [marketplace_col] if marketplace_col else [] ),
             gross_img_col,
             (amazon_img_col if amazon_img_col != "(none)" else "")
         }],
@@ -97,7 +97,7 @@ amazon_img_col = None if amazon_img_col == "(none)" else amazon_img_col
 
 # ---------- state ----------
 if "match_map" not in st.session_state:
-    st.session_state.match_map = {}  # row_index -> True/False
+    st.session_state.match_map = {}
 
 def get_match(i: int) -> bool:
     return bool(st.session_state.match_map.get(i, False))
@@ -112,10 +112,8 @@ c1, c2, c3 = st.columns([1, 2, 2])
 with c1:
     page = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
 with c2:
-    st.write("")
     st.write(f"Total pages: **{total_pages}**")
 with c3:
-    st.write("")
     if st.button("Reset all MATCH"):
         st.session_state.match_map = {}
         st.rerun()
@@ -129,23 +127,39 @@ st.divider()
 # ---------- render ----------
 for i, row in page_df.iterrows():
     with st.container(border=True):
-        left, mid, right = st.columns([1, 3, 3])
 
-        # --- LEFT: match + link ---
+        # BIG MATCH button (checkbox styled via label + scale)
+        st.markdown(
+            """
+            <style>
+            div[data-testid="stCheckbox"] label {
+                font-size: 1.4rem;
+                font-weight: 700;
+            }
+            div[data-testid="stCheckbox"] input {
+                transform: scale(1.6);
+                margin-right: 8px;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+        left, mid, right = st.columns([1.2, 3, 3])
+
+        # --- LEFT: BIG MATCH + link ---
         with left:
             current = get_match(i)
             new_val = st.checkbox("MATCH", value=current, key=f"match_{i}")
             if new_val != current:
                 set_match(i, new_val)
 
-            # Amazon URL depending on mode
             amazon_url = ""
             if amazon_mode == "From CSV column":
                 amazon_url = safe_str(row.get(amazon_url_col, "")) if amazon_url_col else ""
             else:
                 asin_val = safe_str(row.get(asin_col, "")) if asin_col else ""
-                mp_val = safe_str(row.get(marketplace_col, "")) if marketplace_col else ""
-                amazon_url = build_amazon_url_from_asin_marketplace(asin_val, mp_val)
+                amazon_url = build_amazon_url_from_asin_marketplace(asin_val, marketplace_suffix)
 
             if is_nonempty(amazon_url):
                 st.link_button("Open Amazon", amazon_url)
@@ -171,7 +185,7 @@ for i, row in page_df.iterrows():
             else:
                 st.warning("Wholesale image URL is empty.")
 
-        # --- Extra columns: show right under images (expanded) ---
+        # --- Extra columns (always visible, under images) ---
         if show_cols:
             st.markdown("**Details**")
             details = []
@@ -179,15 +193,12 @@ for i, row in page_df.iterrows():
                 v = row.get(c, "")
                 v = "" if pd.isna(v) else v
                 details.append((c, str(v)))
-            # show as a simple table (always expanded)
             st.table(pd.DataFrame(details, columns=["Column", "Value"]))
 
-        # Optional: enforce max height via small CSS (applies to images in this container)
-        # Keeps changes minimal and avoids heavy UI code.
+        # Limit image height (zoom control)
         st.markdown(
             f"""
             <style>
-            /* Limit image height but keep aspect ratio */
             div[data-testid="stImage"] img {{
                 max-height: {img_max_height}px;
                 object-fit: contain;
@@ -202,6 +213,7 @@ st.divider()
 # ---------- export ----------
 out = df.copy()
 out["MATCH"] = [bool(st.session_state.match_map.get(i, False)) for i in range(len(out))]
+
 csv_bytes = out.to_csv(index=False).encode("utf-8")
 
 st.download_button(
