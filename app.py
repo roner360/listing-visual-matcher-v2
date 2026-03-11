@@ -1,25 +1,11 @@
-import os
-import time
-import re
-from typing import Optional, Dict, Any, Tuple
-
-import pandas as pd
-import requests
 import streamlit as st
-from bs4 import BeautifulSoup
+import pandas as pd
 
+st.set_page_config(page_title="Visual Matcher", layout="wide")
+st.title("Visual Matcher (CSV)")
 
-# -----------------------------
-# Config UI
-# -----------------------------
-st.set_page_config(page_title="CSV Matcher", layout="wide")
-st.title("CSV Matcher: Amazon vs Grossista")
-
-
-# -----------------------------
-# Helpers
-# -----------------------------
-def safe_str(x: Any) -> str:
+# ---------- helpers ----------
+def safe_str(x) -> str:
     if x is None:
         return ""
     try:
@@ -27,216 +13,45 @@ def safe_str(x: Any) -> str:
             return ""
     except Exception:
         pass
-    return str(x).strip()
+    s = str(x).strip()
+    return "" if s.lower() == "nan" else s
 
+def build_amazon_url_from_asin_marketplace(asin: str, marketplace_suffix: str) -> str:
+    asin = safe_str(asin)
+    mp = safe_str(marketplace_suffix).lower()
+    if not asin or not mp:
+        return ""
+    return f"https://www.amazon.{mp}/dp/{asin}"
 
-def suggest_amazon_img_col(df: pd.DataFrame, cols: list[str]) -> Optional[str]:
-    """
-    Preselect the column that most often contains m.media-amazon.com
-    """
-    best_col = None
-    best_score = 0.0
+def is_nonempty(s: str) -> bool:
+    return bool(s and s.strip())
 
+def guess_amazon_col(df, cols):
     for c in cols:
-        s = df[c].dropna().astype(str).head(300)
-        if len(s) == 0:
-            continue
-
-        score = s.str.contains("m.media-amazon.com", case=False, regex=False).mean()
-        if score > best_score:
-            best_score = score
-            best_col = c
-
-    return best_col if best_score > 0 else None
-
-
-def suggest_supplier_img_col(df: pd.DataFrame, cols: list[str], amazon_img_suggested: Optional[str]) -> Optional[str]:
-    """
-    Preselect the first column that strongly looks like an image URL column
-    (.jpg/.jpeg/.png/.webp), excluding Amazon CDN columns.
-    """
-    img_pattern = re.compile(r"\.(jpg|jpeg|png|webp)(\?.*)?$", re.IGNORECASE)
-
-    strong_candidates = []
-    fallback_candidates = []
-
-    for c in cols:
-        if c == amazon_img_suggested:
-            continue
-
-        s = df[c].dropna().astype(str).head(300)
-        if len(s) == 0:
-            continue
-
-        amazon_like_score = s.str.contains("m.media-amazon.com", case=False, regex=False).mean()
-        if amazon_like_score > 0.2:
-            continue
-
-        img_score = s.str.contains(img_pattern, regex=True).mean()
-
-        if img_score >= 0.6:
-            strong_candidates.append((c, img_score))
-        elif img_score > 0:
-            fallback_candidates.append((c, img_score))
-
-    if strong_candidates:
-        strong_candidates.sort(key=lambda x: x[1], reverse=True)
-        return strong_candidates[0][0]
-
-    if fallback_candidates:
-        fallback_candidates.sort(key=lambda x: x[1], reverse=True)
-        return fallback_candidates[0][0]
-
+        sample = df[c].dropna().astype(str).head(30)
+        if any("m.media-amazon.com" in val for val in sample):
+            return c
     return None
 
+def guess_supplier_col(df, cols, amz_col):
+    for c in cols:
+        if c == amz_col: 
+            continue
+        sample = df[c].dropna().astype(str).head(30)
+        if not sample.empty:
+            # Check if strings contain typical image extensions
+            hits = sum(('.jpg' in val.lower() or '.png' in val.lower() or '.jpeg' in val.lower()) for val in sample)
+            if hits / len(sample) >= 0.7:  # 70% threshold is safe
+                return c
+    return None
 
-# -----------------------------
-# Proxy (IPRoyal) via ENV / Secrets
-# -----------------------------
-def get_proxy_config() -> Optional[Dict[str, str]]:
-    host = os.getenv("PROXY_HOST", "").strip()
-    port = os.getenv("PROXY_PORT", "").strip()
-    user = os.getenv("PROXY_USER", "").strip()
-    password = os.getenv("PROXY_PASS", "").strip()
-
-    if not host or not port:
-        return None
-
-    if user and password:
-        proxy_url = f"http://{user}:{password}@{host}:{port}"
-    else:
-        proxy_url = f"http://{host}:{port}"
-
-    return {"http": proxy_url, "https": proxy_url}
-
-
-def get_timeout() -> Tuple[float, float]:
-    return (5.0, 12.0)
-
-
-def build_session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update(
-        {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/123.0.0.0 Safari/537.36"
-            ),
-            "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-        }
-    )
-    return s
-
-
-SESSION = build_session()
-PROXIES = get_proxy_config()
-
-
-# -----------------------------
-# Cache: HTML e immagini
-# -----------------------------
-@st.cache_data(show_spinner=False, ttl=60 * 60)
-def fetch_html(url: str) -> Optional[str]:
-    try:
-        r = SESSION.get(url, proxies=PROXIES, timeout=get_timeout(), allow_redirects=True)
-        if r.status_code >= 400:
-            return None
-        return r.text
-    except requests.RequestException:
-        return None
-
-
-@st.cache_data(show_spinner=False, ttl=24 * 60 * 60)
-def extract_og_image(html: str) -> Optional[str]:
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        tag = soup.find("meta", property="og:image")
-        if tag and tag.get("content"):
-            return tag["content"].strip()
-
-        tag = soup.find("meta", attrs={"name": "twitter:image"})
-        if tag and tag.get("content"):
-            return tag["content"].strip()
-
-        return None
-    except Exception:
-        return None
-
-
-@st.cache_data(show_spinner=False, ttl=24 * 60 * 60)
-def download_image_bytes(url: str) -> Optional[bytes]:
-    try:
-        r = SESSION.get(url, proxies=PROXIES, timeout=get_timeout(), stream=True)
-        if r.status_code >= 400:
-            return None
-
-        max_bytes = 3_500_000
-        data = bytearray()
-        for chunk in r.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                break
-            data.extend(chunk)
-            if len(data) > max_bytes:
-                break
-        return bytes(data)
-    except requests.RequestException:
-        return None
-
-
-def get_amazon_image_url(row: pd.Series, amazon_url_col: str, amazon_img_col: Optional[str]) -> Optional[str]:
-    """
-    If amazon_img_col exists and has a value: use it.
-    Otherwise try extracting og:image from the Amazon page.
-    """
-    if amazon_img_col and amazon_img_col in row and pd.notna(row[amazon_img_col]) and str(row[amazon_img_col]).strip():
-        return str(row[amazon_img_col]).strip()
-
-    url = safe_str(row.get(amazon_url_col, ""))
-    if not url:
-        return None
-
-    html = fetch_html(url)
-    if not html:
-        return None
-
-    return extract_og_image(html)
-
-
-# -----------------------------
-# Stato e Callback
-# -----------------------------
-if "match_map" not in st.session_state:
-    st.session_state.match_map = {}
-
-if "notes_map" not in st.session_state:
-    st.session_state.notes_map = {}
-
-if "page_num" not in st.session_state:
-    st.session_state.page_num = 1
-
-def update_match(row_id: int):
-    st.session_state.match_map[row_id] = st.session_state[f"match_{row_id}"]
-
-def update_note(row_id: int):
-    st.session_state.notes_map[row_id] = st.session_state[f"note_{row_id}"]
-
-def get_match(row_id: int) -> bool:
-    return bool(st.session_state.match_map.get(row_id, False))
-
-def get_note(row_id: int) -> str:
-    return str(st.session_state.notes_map.get(row_id, ""))
-
-
-# -----------------------------
-# Upload CSV + scelta colonne
-# -----------------------------
-uploaded = st.file_uploader("Carica CSV", type=["csv"])
-
+# ---------- upload ----------
+uploaded = st.file_uploader("Upload CSV", type=["csv"])
 if not uploaded:
-    st.info("Carica un CSV per iniziare.")
+    st.info("Upload a CSV to start.")
     st.stop()
 
+# Robust read: try comma, then semicolon
 try:
     df = pd.read_csv(uploaded)
 except Exception:
@@ -244,221 +59,230 @@ except Exception:
     df = pd.read_csv(uploaded, sep=";")
 
 df = df.reset_index(drop=True)
-st.caption(f"Righe: {len(df):,}  |  Colonne: {len(df.columns)}")
+st.caption(f"Rows: {len(df):,} | Columns: {len(df.columns)}")
 
 cols = list(df.columns)
 
-# Suggested columns
-amazon_img_suggested = suggest_amazon_img_col(df, cols)
-supplier_img_suggested = suggest_supplier_img_col(df, cols, amazon_img_suggested)
+# Auto-guess image columns
+amz_guess = guess_amazon_col(df, cols)
+sup_guess = guess_supplier_col(df, cols, amz_guess)
 
-amazon_img_options = ["(nessuna)"] + cols
-amazon_img_index = amazon_img_options.index(amazon_img_suggested) if amazon_img_suggested in amazon_img_options else 0
-grossista_index = cols.index(supplier_img_suggested) if supplier_img_suggested in cols else 0
-
+# ---------- sidebar ----------
 with st.sidebar:
-    st.header("Impostazioni")
+    st.header("Amazon URL source")
 
-    amazon_url_col = st.selectbox("Colonna URL Amazon", cols, index=0)
-
-    grossista_img_col = st.selectbox(
-        "Colonna URL immagine Grossista",
-        cols,
-        index=grossista_index
+    amazon_mode = st.radio(
+        "How to get Amazon URL?",
+        ["From CSV column", "Build from ASIN"],
+        index=0
     )
 
-    amazon_img_col = st.selectbox(
-        "Colonna URL immagine Amazon (opzionale, consigliata)",
-        amazon_img_options,
-        index=amazon_img_index
-    )
-    amazon_img_col = None if amazon_img_col == "(nessuna)" else amazon_img_col
+    amazon_url_col = None
+    asin_col = None
+    marketplace_suffix = ""
 
-    page_size = st.selectbox("Righe per pagina", [10, 20, 50, 100], index=1)
+    if amazon_mode == "From CSV column":
+        amazon_url_col = st.selectbox("Amazon URL column", cols)
+    else:
+        asin_col = st.selectbox("ASIN column", cols)
+        marketplace_suffix = st.text_input(
+            "Marketplace suffix (manual)",
+            placeholder="it, com, co.uk, de, fr, es …"
+        )
+        st.caption("URL format: https://www.amazon.<suffix>/dp/<ASIN>")
 
+    st.divider()
+    st.header("Images")
+
+    # Set up indexes based on guesses
+    amz_options = ["(none)"] + cols
+    amz_index = amz_options.index(amz_guess) if amz_guess in amz_options else 0
+    amazon_img_col = st.selectbox("Amazon IMAGE URL column", amz_options, index=amz_index)
+
+    sup_options = cols
+    sup_index = sup_options.index(sup_guess) if sup_guess in sup_options else 0
+    gross_img_col = st.selectbox("Wholesale IMAGE URL column", sup_options, index=sup_index)
+
+    img_width = st.slider("Image width (px)", 180, 650, 360, 10)
+    img_max_height = st.slider("Max image height (px)", 160, 900, 380, 10)
+
+    st.divider()
+    st.header("Extra columns")
     show_cols = st.multiselect(
-        "Altre colonne da mostrare",
-        [c for c in cols if c not in {amazon_url_col, grossista_img_col, (amazon_img_col or "")}],
+        "Other columns to show",
+        [c for c in cols if c not in {
+            *( [amazon_url_col] if amazon_url_col else [] ),
+            *( [asin_col] if asin_col else [] ),
+            gross_img_col,
+            (amazon_img_col if amazon_img_col != "(none)" else "")
+        }],
         default=[]
     )
 
-    rate_limit_ms = st.slider("Pausa tra righe (ms) per fetch Amazon", 0, 500, 60)
+    st.divider()
+    page_size = st.selectbox("Rows per page", [10, 20, 50, 100], index=1)
 
-    if amazon_img_suggested:
-        st.caption(f"Suggerita colonna Amazon image: `{amazon_img_suggested}`")
-    if supplier_img_suggested:
-        st.caption(f"Suggerita colonna Grossista image: `{supplier_img_suggested}`")
+amazon_img_col = None if amazon_img_col == "(none)" else amazon_img_col
 
+# ---------- state ----------
+if "match_map" not in st.session_state:
+    st.session_state.match_map = {}
+if "note_map" not in st.session_state:
+    st.session_state.note_map = {}
+if "current_page" not in st.session_state:
+    st.session_state.current_page = 1
 
-# -----------------------------
-# Paginazione - top
-# -----------------------------
+def get_match(i: int) -> bool:
+    return bool(st.session_state.match_map.get(i, False))
+
+def set_match(i: int, v: bool):
+    st.session_state.match_map[i] = bool(v)
+
+def update_note(i: int):
+    st.session_state.note_map[i] = st.session_state[f"note_input_{i}"]
+
+# ---------- pagination setup ----------
 total_pages = max(1, (len(df) + page_size - 1) // page_size)
+if st.session_state.current_page > total_pages:
+    st.session_state.current_page = total_pages
 
-if st.session_state.page_num > total_pages:
-    st.session_state.page_num = total_pages
+def sync_page(key: str):
+    st.session_state.current_page = st.session_state[key]
 
-def update_page_top():
-    st.session_state.page_num = st.session_state.page_top
-
-c1, c2, c3, c4 = st.columns([1, 2, 2, 1])
-
+# --- Top Pagination Controls ---
+c1, c2, c3 = st.columns([1, 2, 2])
 with c1:
-    st.number_input(
-        "Pagina",
-        min_value=1,
-        max_value=total_pages,
-        value=int(st.session_state.page_num),
-        step=1,
-        key="page_top",
-        on_change=update_page_top
-    )
-
+    st.number_input("Page", min_value=1, max_value=total_pages, value=st.session_state.current_page, step=1, key="page_top", on_change=sync_page, args=("page_top",))
 with c2:
-    st.write("")
-    st.write(f"Totale pagine: **{total_pages}**")
-
+    st.write(f"Total pages: **{total_pages}**")
 with c3:
-    st.write("")
-    st.write(f"Proxy attivo: **{'Sì' if PROXIES else 'No'}**")
-
-with c4:
-    st.write("")
-    if st.button("Reset match"):
+    if st.button("Reset all MATCH"):
         st.session_state.match_map = {}
-        st.session_state.notes_map = {}
         st.rerun()
 
-page = int(st.session_state.page_num)
+page = st.session_state.current_page
 start = (page - 1) * page_size
 end = min(len(df), start + page_size)
-page_df = df.iloc[start:end].copy()
+page_df = df.iloc[start:end]
 
 st.divider()
 
-# -----------------------------
-# Render righe (solo pagina)
-# -----------------------------
-for idx, row in page_df.iterrows():
-    row_id = int(idx)
+# ---------- CSS: hide the checkbox visually (but keep it for state) ----------
+st.markdown(
+    """
+    <style>
+    /* Hide checkbox control but keep it in DOM to preserve state */
+    div[data-testid="stCheckbox"] {
+        display: none;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
+# ---------- render ----------
+for i, row in page_df.iterrows():
     with st.container(border=True):
-        top = st.columns([1, 3, 3, 5])
+        left, mid, right = st.columns([1.2, 3, 3])
 
-        # MATCH
-        with top[0]:
-            st.checkbox(
-                "MATCH", 
-                value=get_match(row_id), 
-                key=f"match_{row_id}",
-                on_change=update_match,
-                args=(row_id,)
+        # --- LEFT: Big MATCH button + Amazon link + Notes ---
+        with left:
+            current = get_match(i)
+
+            # Hidden checkbox to store state (key remains stable)
+            _ = st.checkbox("MATCH", value=current, key=f"match_{i}")
+
+            # Big toggle button (same style/size as link_button)
+            btn_label = "✅ MATCH" if not current else "❌ UNMATCH"
+            if st.button(btn_label, key=f"btn_match_{i}", use_container_width=True):
+                set_match(i, not current)
+                st.rerun()
+
+            amazon_url = ""
+            if amazon_mode == "From CSV column":
+                amazon_url = safe_str(row.get(amazon_url_col, "")) if amazon_url_col else ""
+            else:
+                asin_val = safe_str(row.get(asin_col, "")) if asin_col else ""
+                amazon_url = build_amazon_url_from_asin_marketplace(asin_val, marketplace_suffix)
+
+            if is_nonempty(amazon_url):
+                st.link_button("Open Amazon", amazon_url, use_container_width=True)
+            
+            # Notes Input Field
+            st.text_input(
+                "Notes", 
+                value=st.session_state.note_map.get(i, ""), 
+                key=f"note_input_{i}", 
+                on_change=update_note, 
+                args=(i,)
             )
 
-        # Amazon image
-        with top[1]:
-            st.caption("Amazon")
-            amazon_img_url = get_amazon_image_url(row, amazon_url_col, amazon_img_col)
-            if amazon_img_url:
-                img_bytes = download_image_bytes(amazon_img_url)
-                if img_bytes:
-                    st.image(img_bytes, use_container_width=True)
+        # --- MID: Amazon image ---
+        with mid:
+            st.caption("Amazon image")
+            if amazon_img_col:
+                img_url = safe_str(row.get(amazon_img_col, ""))
+                if is_nonempty(img_url):
+                    st.image(img_url, width=img_width)
                 else:
-                    st.warning("Immagine Amazon non scaricabile.")
+                    st.warning("Amazon image URL is empty.")
             else:
-                st.warning("Immagine Amazon non trovata.")
+                st.info("No Amazon image column selected.")
 
-        # Grossista image
-        with top[2]:
-            st.caption("Grossista")
-            gross_url = safe_str(row.get(grossista_img_col, ""))
-            if gross_url:
-                img_bytes = download_image_bytes(gross_url)
-                if img_bytes:
-                    st.image(img_bytes, use_container_width=True)
-                else:
-                    st.warning("Immagine Grossista non scaricabile.")
+        # --- RIGHT: Wholesale image ---
+        with right:
+            st.caption("Wholesale image")
+            w_url = safe_str(row.get(gross_img_col, ""))
+            if is_nonempty(w_url):
+                st.image(w_url, width=img_width)
             else:
-                st.warning("URL immagine grossista vuoto.")
+                st.warning("Wholesale image URL is empty.")
 
-        # Details + Notes
-        with top[3]:
-            st.caption("Dettagli")
-            data = {}
+        # --- Extra columns (always visible, under images) ---
+        if show_cols:
+            st.markdown("**Details**")
+            details = []
             for c in show_cols:
                 v = row.get(c, "")
-                if pd.isna(v):
-                    v = ""
-                data[c] = v
-            st.json(data, expanded=False)
+                v = "" if pd.isna(v) else v
+                details.append((c, str(v)))
+            st.table(pd.DataFrame(details, columns=["Column", "Value"]))
 
-            st.text_area(
-                "Notes",
-                value=get_note(row_id),
-                key=f"note_{row_id}",
-                height=100,
-                on_change=update_note,
-                args=(row_id,)
-            )
-
-        if rate_limit_ms > 0 and amazon_img_col is None:
-            time.sleep(rate_limit_ms / 1000.0)
+        # Limit image height (zoom control)
+        st.markdown(
+            f"""
+            <style>
+            div[data-testid="stImage"] img {{
+                max-height: {img_max_height}px;
+                object-fit: contain;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
 
 st.divider()
 
-# -----------------------------
-# Paginazione - bottom
-# -----------------------------
-def update_page_bottom():
-    st.session_state.page_num = st.session_state.page_bottom
+# --- Bottom Pagination Controls ---
+c1_b, c2_b, c3_b = st.columns([1, 2, 2])
+with c1_b:
+    st.number_input("Page (bottom)", min_value=1, max_value=total_pages, value=st.session_state.current_page, step=1, key="page_bottom", on_change=sync_page, args=("page_bottom",))
+with c2_b:
+    st.write(f"Total pages: **{total_pages}**")
 
-b1, b2, b3, b4 = st.columns([1, 1, 2, 2])
+st.divider()
 
-with b1:
-    if st.button("⬅️ Prev", disabled=(st.session_state.page_num <= 1), use_container_width=True):
-        st.session_state.page_num -= 1
-        st.rerun()
-
-with b2:
-    if st.button("Next ➡️", disabled=(st.session_state.page_num >= total_pages), use_container_width=True):
-        st.session_state.page_num += 1
-        st.rerun()
-
-with b3:
-    st.number_input(
-        "Vai a pagina",
-        min_value=1,
-        max_value=total_pages,
-        value=int(st.session_state.page_num),
-        step=1,
-        key="page_bottom",
-        on_change=update_page_bottom
-    )
-
-with b4:
-    st.write("")
-    st.write(f"Pagina **{st.session_state.page_num}** di **{total_pages}**")
-
-
-# -----------------------------
-# Export CSV con colonna MATCH + NOTES
-# -----------------------------
-st.subheader("Esporta CSV con MATCH")
-
-match_map: Dict[int, bool] = st.session_state.match_map
-notes_map: Dict[int, str] = st.session_state.notes_map
-
+# ---------- export ----------
 out = df.copy()
-out["MATCH"] = [bool(match_map.get(i, False)) for i in range(len(out))]
-out["NOTES"] = [str(notes_map.get(i, "")) for i in range(len(out))]
+out["MATCH"] = [bool(st.session_state.match_map.get(i, False)) for i in range(len(out))]
+out["Notes"] = [str(st.session_state.note_map.get(i, "")) for i in range(len(out))]
 
 csv_bytes = out.to_csv(index=False).encode("utf-8")
 
 st.download_button(
-    "Download CSV (con MATCH + NOTES)",
+    "Download CSV with MATCH & Notes",
     data=csv_bytes,
-    file_name="output_with_match_notes.csv",
+    file_name="output_with_match.csv",
     mime="text/csv",
 )
-
-st.caption("Le righe non controllate rimangono MATCH = False.")
+st.caption("Rows not checked stay MATCH = False. Empty notes stay blank.")
