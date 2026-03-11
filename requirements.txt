@@ -1,3 +1,5 @@
 streamlit
 pandas
-keepa
+requests
+beautifulsoup4
+lxml
