@@ -204,7 +204,7 @@ def get_amazon_image_url(row: pd.Series, amazon_url_col: str, amazon_img_col: Op
 
 
 # -----------------------------
-# Stato
+# Stato e Callback
 # -----------------------------
 if "match_map" not in st.session_state:
     st.session_state.match_map = {}
@@ -215,18 +215,14 @@ if "notes_map" not in st.session_state:
 if "page_num" not in st.session_state:
     st.session_state.page_num = 1
 
+def update_match(row_id: int):
+    st.session_state.match_map[row_id] = st.session_state[f"match_{row_id}"]
 
-def set_match(row_id: int, value: bool):
-    st.session_state.match_map[row_id] = value
-
+def update_note(row_id: int):
+    st.session_state.notes_map[row_id] = st.session_state[f"note_{row_id}"]
 
 def get_match(row_id: int) -> bool:
     return bool(st.session_state.match_map.get(row_id, False))
-
-
-def set_note(row_id: int, value: str):
-    st.session_state.notes_map[row_id] = value
-
 
 def get_note(row_id: int) -> str:
     return str(st.session_state.notes_map.get(row_id, ""))
@@ -302,20 +298,21 @@ total_pages = max(1, (len(df) + page_size - 1) // page_size)
 if st.session_state.page_num > total_pages:
     st.session_state.page_num = total_pages
 
+def update_page_top():
+    st.session_state.page_num = st.session_state.page_top
+
 c1, c2, c3, c4 = st.columns([1, 2, 2, 1])
 
 with c1:
-    top_page = st.number_input(
+    st.number_input(
         "Pagina",
         min_value=1,
         max_value=total_pages,
         value=int(st.session_state.page_num),
         step=1,
-        key="page_top"
+        key="page_top",
+        on_change=update_page_top
     )
-    if top_page != st.session_state.page_num:
-        st.session_state.page_num = int(top_page)
-        st.rerun()
 
 with c2:
     st.write("")
@@ -350,10 +347,13 @@ for idx, row in page_df.iterrows():
 
         # MATCH
         with top[0]:
-            current = get_match(row_id)
-            new_val = st.checkbox("MATCH", value=current, key=f"match_{row_id}")
-            if new_val != current:
-                set_match(row_id, new_val)
+            st.checkbox(
+                "MATCH", 
+                value=get_match(row_id), 
+                key=f"match_{row_id}",
+                on_change=update_match,
+                args=(row_id,)
+            )
 
         # Amazon image
         with top[1]:
@@ -392,14 +392,14 @@ for idx, row in page_df.iterrows():
                 data[c] = v
             st.json(data, expanded=False)
 
-            note_val = st.text_area(
+            st.text_area(
                 "Notes",
                 value=get_note(row_id),
                 key=f"note_{row_id}",
-                height=100
+                height=100,
+                on_change=update_note,
+                args=(row_id,)
             )
-            if note_val != get_note(row_id):
-                set_note(row_id, note_val)
 
         if rate_limit_ms > 0 and amazon_img_col is None:
             time.sleep(rate_limit_ms / 1000.0)
@@ -409,6 +409,9 @@ st.divider()
 # -----------------------------
 # Paginazione - bottom
 # -----------------------------
+def update_page_bottom():
+    st.session_state.page_num = st.session_state.page_bottom
+
 b1, b2, b3, b4 = st.columns([1, 1, 2, 2])
 
 with b1:
@@ -422,17 +425,15 @@ with b2:
         st.rerun()
 
 with b3:
-    bottom_page = st.number_input(
+    st.number_input(
         "Vai a pagina",
         min_value=1,
         max_value=total_pages,
         value=int(st.session_state.page_num),
         step=1,
-        key="page_bottom"
+        key="page_bottom",
+        on_change=update_page_bottom
     )
-    if bottom_page != st.session_state.page_num:
-        st.session_state.page_num = int(bottom_page)
-        st.rerun()
 
 with b4:
     st.write("")
