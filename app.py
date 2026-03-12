@@ -218,17 +218,30 @@ for i, row in page_df.iterrows():
             )
 
         # --- MID: Amazon image ---
+
+        
         with mid:
             st.caption("Amazon image")
+        
+            img_url = ""
+        
             if amazon_img_col:
                 img_url = safe_str(row.get(amazon_img_col, ""))
-                if is_nonempty(img_url):
-                    st.image(img_url, width=img_width)
-                else:
-                    st.warning("Amazon image URL is empty.")
             else:
-                st.info("No Amazon image column selected.")
-
+                # auto-detect colonne con m.media
+                candidates = []
+                for c in row.index:
+                    val = safe_str(row.get(c, ""))
+                    if "m.media" in val:
+                        candidates.append(val)
+        
+                if candidates:
+                    img_url = min(candidates, key=len)  # prende la più corta
+        
+            if is_nonempty(img_url):
+                st.image(img_url, width=img_width)
+            else:
+                st.warning("Amazon image not found.")
         # --- RIGHT: Wholesale image ---
         with right:
             st.caption("Wholesale image")
