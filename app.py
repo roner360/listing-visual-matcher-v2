@@ -35,15 +35,18 @@ def guess_amazon_col(df, cols):
 
 def guess_supplier_col(df, cols, amz_col):
     for c in cols:
-        if c == amz_col: 
+        if c == amz_col:
             continue
         sample = df[c].dropna().astype(str).head(30)
         if not sample.empty:
-            # Check if strings contain typical image extensions
-            hits = sum(('.jpg' in val.lower() or '.png' in val.lower() or '.jpeg' in val.lower()) for val in sample)
-            if hits / len(sample) >= 0.7:  # 70% threshold is safe
+            hits = sum(
+                (".jpg" in val.lower() or ".png" in val.lower() or ".jpeg" in val.lower())
+                for val in sample
+            )
+            if hits / len(sample) >= 0.7:
                 return c
     return None
+
 
 # ---------- upload ----------
 uploaded = st.file_uploader("Upload CSV", type=["csv"])
@@ -51,7 +54,6 @@ if not uploaded:
     st.info("Upload a CSV to start.")
     st.stop()
 
-# Robust read: try comma, then semicolon
 try:
     df = pd.read_csv(uploaded)
 except Exception:
@@ -66,6 +68,50 @@ cols = list(df.columns)
 # Auto-guess image columns
 amz_guess = guess_amazon_col(df, cols)
 sup_guess = guess_supplier_col(df, cols, amz_guess)
+
+# ---------- session state ----------
+if "match_map" not in st.session_state:
+    st.session_state.match_map = {}
+
+if "note_map" not in st.session_state:
+    st.session_state.note_map = {}
+
+if "current_page" not in st.session_state:
+    st.session_state.current_page = 1
+
+if "page_top" not in st.session_state:
+    st.session_state.page_top = 1
+
+if "page_bottom" not in st.session_state:
+    st.session_state.page_bottom = 1
+
+
+# ---------- state helpers ----------
+def get_match(i: int) -> bool:
+    return bool(st.session_state.match_map.get(i, False))
+
+def set_match(i: int, v: bool):
+    st.session_state.match_map[i] = bool(v)
+
+def toggle_match(i: int):
+    st.session_state.match_map[i] = not bool(st.session_state.match_map.get(i, False))
+
+def update_note(i: int):
+    st.session_state.note_map[i] = st.session_state.get(f"note_input_{i}", "")
+
+def sync_page_from_top():
+    new_page = int(st.session_state.page_top)
+    st.session_state.current_page = new_page
+    st.session_state.page_bottom = new_page
+
+def sync_page_from_bottom():
+    new_page = int(st.session_state.page_bottom)
+    st.session_state.current_page = new_page
+    st.session_state.page_top = new_page
+
+def reset_all_match():
+    st.session_state.match_map = {}
+
 
 # ---------- sidebar ----------
 with st.sidebar:
@@ -94,7 +140,6 @@ with st.sidebar:
     st.divider()
     st.header("Images")
 
-    # Set up indexes based on guesses
     amz_options = ["(none)"] + cols
     amz_index = amz_options.index(amz_guess) if amz_guess in amz_options else 0
     amazon_img_col = st.selectbox("Amazon IMAGE URL column", amz_options, index=amz_index)
@@ -108,14 +153,19 @@ with st.sidebar:
 
     st.divider()
     st.header("Extra columns")
+
+    excluded = set()
+    if amazon_url_col:
+        excluded.add(amazon_url_col)
+    if asin_col:
+        excluded.add(asin_col)
+    excluded.add(gross_img_col)
+    if amazon_img_col != "(none)":
+        excluded.add(amazon_img_col)
+
     show_cols = st.multiselect(
         "Other columns to show",
-        [c for c in cols if c not in {
-            *( [amazon_url_col] if amazon_url_col else [] ),
-            *( [asin_col] if asin_col else [] ),
-            gross_img_col,
-            (amazon_img_col if amazon_img_col != "(none)" else "")
-        }],
+        [c for c in cols if c not in excluded],
         default=[]
     )
 
@@ -124,41 +174,35 @@ with st.sidebar:
 
 amazon_img_col = None if amazon_img_col == "(none)" else amazon_img_col
 
-# ---------- state ----------
-if "match_map" not in st.session_state:
-    st.session_state.match_map = {}
-if "note_map" not in st.session_state:
-    st.session_state.note_map = {}
-if "current_page" not in st.session_state:
-    st.session_state.current_page = 1
-
-def get_match(i: int) -> bool:
-    return bool(st.session_state.match_map.get(i, False))
-
-def set_match(i: int, v: bool):
-    st.session_state.match_map[i] = bool(v)
-
-def update_note(i: int):
-    st.session_state.note_map[i] = st.session_state[f"note_input_{i}"]
 
 # ---------- pagination setup ----------
 total_pages = max(1, (len(df) + page_size - 1) // page_size)
+
+if st.session_state.current_page < 1:
+    st.session_state.current_page = 1
 if st.session_state.current_page > total_pages:
     st.session_state.current_page = total_pages
 
-def sync_page(key: str):
-    st.session_state.current_page = st.session_state[key]
+# keep both pagers aligned
+st.session_state.page_top = st.session_state.current_page
+st.session_state.page_bottom = st.session_state.current_page
 
-# --- Top Pagination Controls ---
+
+# ---------- top pagination ----------
 c1, c2, c3 = st.columns([1, 2, 2])
 with c1:
-    st.number_input("Page", min_value=1, max_value=total_pages, value=st.session_state.current_page, step=1, key="page_top", on_change=sync_page, args=("page_top",))
+    st.number_input(
+        "Page",
+        min_value=1,
+        max_value=total_pages,
+        step=1,
+        key="page_top",
+        on_change=sync_page_from_top,
+    )
 with c2:
     st.write(f"Total pages: **{total_pages}**")
 with c3:
-    if st.button("Reset all MATCH"):
-        st.session_state.match_map = {}
-        st.rerun()
+    st.button("Reset all MATCH", on_click=reset_all_match)
 
 page = st.session_state.current_page
 start = (page - 1) * page_size
@@ -167,36 +211,38 @@ page_df = df.iloc[start:end]
 
 st.divider()
 
-# ---------- CSS: hide the checkbox visually (but keep it for state) ----------
+
+# ---------- global css ----------
 st.markdown(
-    """
+    f"""
     <style>
-    /* Hide checkbox control but keep it in DOM to preserve state */
-    div[data-testid="stCheckbox"] {
-        display: none;
-    }
+    div[data-testid="stImage"] img {{
+        max-height: {img_max_height}px;
+        object-fit: contain;
+    }}
     </style>
     """,
     unsafe_allow_html=True
 )
+
 
 # ---------- render ----------
 for i, row in page_df.iterrows():
     with st.container(border=True):
         left, mid, right = st.columns([1.2, 3, 3])
 
-        # --- LEFT: Big MATCH button + Amazon link + Notes ---
+        # --- LEFT: match button + amazon link + notes ---
         with left:
             current = get_match(i)
-
-            # Hidden checkbox to store state (key remains stable)
-            _ = st.checkbox("MATCH", value=current, key=f"match_{i}")
-
-            # Big toggle button (same style/size as link_button)
             btn_label = "✅ MATCH" if not current else "❌ UNMATCH"
-            if st.button(btn_label, key=f"btn_match_{i}", use_container_width=True):
-                set_match(i, not current)
-                st.rerun()
+
+            st.button(
+                btn_label,
+                key=f"btn_match_{i}",
+                use_container_width=True,
+                on_click=toggle_match,
+                args=(i,),
+            )
 
             amazon_url = ""
             if amazon_mode == "From CSV column":
@@ -207,41 +253,36 @@ for i, row in page_df.iterrows():
 
             if is_nonempty(amazon_url):
                 st.link_button("Open Amazon", amazon_url, use_container_width=True)
-            
-            # Notes Input Field
+
             st.text_input(
-                "Notes", 
-                value=st.session_state.note_map.get(i, ""), 
-                key=f"note_input_{i}", 
-                on_change=update_note, 
-                args=(i,)
+                "Notes",
+                value=st.session_state.note_map.get(i, ""),
+                key=f"note_input_{i}",
+                on_change=update_note,
+                args=(i,),
             )
 
         # --- MID: Amazon image ---
-
-        
         with mid:
             st.caption("Amazon image")
-        
+
             img_url = ""
-        
             if amazon_img_col:
                 img_url = safe_str(row.get(amazon_img_col, ""))
             else:
-                # auto-detect colonne con m.media
                 candidates = []
                 for c in row.index:
                     val = safe_str(row.get(c, ""))
                     if "m.media" in val:
                         candidates.append(val)
-        
                 if candidates:
-                    img_url = min(candidates, key=len)  # prende la più corta
-        
+                    img_url = min(candidates, key=len)
+
             if is_nonempty(img_url):
                 st.image(img_url, width=img_width)
             else:
                 st.warning("Amazon image not found.")
+
         # --- RIGHT: Wholesale image ---
         with right:
             st.caption("Wholesale image")
@@ -251,7 +292,7 @@ for i, row in page_df.iterrows():
             else:
                 st.warning("Wholesale image URL is empty.")
 
-        # --- Extra columns (always visible, under images) ---
+        # --- Extra columns ---
         if show_cols:
             st.markdown("**Details**")
             details = []
@@ -261,29 +302,27 @@ for i, row in page_df.iterrows():
                 details.append((c, str(v)))
             st.table(pd.DataFrame(details, columns=["Column", "Value"]))
 
-        # Limit image height (zoom control)
-        st.markdown(
-            f"""
-            <style>
-            div[data-testid="stImage"] img {{
-                max-height: {img_max_height}px;
-                object-fit: contain;
-            }}
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-
 st.divider()
 
-# --- Bottom Pagination Controls ---
+
+# ---------- bottom pagination ----------
 c1_b, c2_b, c3_b = st.columns([1, 2, 2])
 with c1_b:
-    st.number_input("Page (bottom)", min_value=1, max_value=total_pages, value=st.session_state.current_page, step=1, key="page_bottom", on_change=sync_page, args=("page_bottom",))
+    st.number_input(
+        "Page (bottom)",
+        min_value=1,
+        max_value=total_pages,
+        step=1,
+        key="page_bottom",
+        on_change=sync_page_from_bottom,
+    )
 with c2_b:
     st.write(f"Total pages: **{total_pages}**")
+with c3_b:
+    st.write(f"Current page: **{st.session_state.current_page}**")
 
 st.divider()
+
 
 # ---------- export ----------
 out = df.copy()
